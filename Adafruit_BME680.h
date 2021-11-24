@@ -33,7 +33,7 @@ extern "C" {
 #include <Adafruit_Sensor.h>
 
 
-#define BME68X_DEFAULT_ADDRESS (0x77)    ///< The default I2C address
+#define BME68X_DEFAULT_ADDRESS (0x76)    ///< The default I2C address
 #define BME68X_DEFAULT_SPIFREQ (1000000) ///< The default SPI Clock speed
 
 #define BME680_OS_16X BME68X_OS_16X   ///< Alias for BME680 existing examples

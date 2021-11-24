@@ -45,6 +45,7 @@ static int8_t i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len,
 //static int8_t spi_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len,
 //                        void *interface);
 static void delay_usec(uint32_t us, void *intf_ptr);
+uint32_t GetMicros(void);
 
 // PUBLIC FUNCTIONS
 
@@ -93,7 +94,7 @@ Adafruit_BME680::Adafruit_BME680(void)
  *          Hardware ss initialized, verifies it is in the I2C or SPI bus, then
  * reads calibration data in preparation for sensor reads.
  *  @param  addr
- *          Optional parameter for the I2C address of BME680. Default is 0x77
+ *          Optional parameter for the I2C address of BME680. Default is 0x76
  *  @param  initSettings
  *          Optional parameter for initializing the sensor settings.
  *          Default is true.
@@ -102,7 +103,7 @@ Adafruit_BME680::Adafruit_BME680(void)
 bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, bool initSettings) {
 
 	i2c_han = i2c_handle;
-	i2c_addr = i2c_address;
+	i2c_addr = i2c_address << 1;
 
 	i2c_dev.i2c_han = i2c_han;
 	i2c_dev.i2c_addr = i2c_addr;
@@ -111,9 +112,9 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
 
 	gas_sensor.chip_id = i2c_addr;
 	gas_sensor.intf = BME68X_I2C_INTF;
-	gas_sensor.intf_ptr = NULL;
-	gas_sensor.read = &i2c_read;
-	gas_sensor.write = &i2c_write;
+	gas_sensor.intf_ptr = &i2c_dev;
+	gas_sensor.read = i2c_read;
+	gas_sensor.write = i2c_write;
 
   gas_sensor.amb_temp = 25; /* The ambient temperature in deg C is used for
                                defining the heater temperature */
@@ -537,9 +538,9 @@ int8_t Adafruit_BME680::readRegister(uint16_t mem_addr, uint8_t *dest,
 		uint16_t size, void *intf) {
 	if (HAL_OK
 			== HAL_I2C_Mem_Read(i2c_han, i2c_addr, mem_addr, 1, dest, size, 10)) {
-		return -1;
-	} else {
 		return 0;
+	} else {
+		return -1;
 	}
 }
 
@@ -547,9 +548,9 @@ int8_t Adafruit_BME680::writeRegister(uint8_t mem_addr, uint8_t *val,
 		uint16_t size,  void *intf) {
 	if (HAL_OK
 			== HAL_I2C_Mem_Write(i2c_han, i2c_addr, mem_addr, 1, val, size, 10)) {
-		return -1;
-	} else {
 		return 0;
+	} else {
+		return -1;
 	}
 }
 
@@ -562,9 +563,9 @@ int8_t i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len, void *intf) {
 
 	if (HAL_OK
 			== HAL_I2C_Mem_Read(_dev->i2c_han, _dev->i2c_addr, reg_addr, 1, reg_data, len, 10)) {
-		return -1;
-	} else {
 		return 0;
+	} else {
+		return -1;
 	}
 }
 
@@ -577,9 +578,9 @@ int8_t i2c_write(uint8_t reg_addr, const uint8_t *reg_data, uint32_t len,
 
 	if (HAL_OK
 			== HAL_I2C_Mem_Write(_dev->i2c_han, _dev->i2c_addr, reg_addr, 1, const_cast <uint8_t *>(reg_data), len, 10)) {
-		return -1;
-	} else {
 		return 0;
+	} else {
+		return -1;
 	}
 }
 
@@ -597,7 +598,12 @@ static void delay_usec(uint32_t t, void *intf_ptr)
       // do nothing
     };
   }
+
 };
+
+uint32_t GetMicros(void){
+	return HAL_GetTick() * 1000;
+}
 
 ///*!
 // *  @brief  Reads 8 bit values over SPI
