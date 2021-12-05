@@ -32,6 +32,7 @@ extern "C" {
 #include "bme68x.h"
 #include <Adafruit_Sensor.h>
 
+#define SEALEVELPRESSURE_HPA (1016.20)
 
 #define BME68X_DEFAULT_ADDRESS (0x76)    ///< The default I2C address
 #define BME68X_DEFAULT_SPIFREQ (1000000) ///< The default SPI Clock speed
