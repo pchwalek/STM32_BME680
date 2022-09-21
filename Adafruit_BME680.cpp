@@ -30,10 +30,17 @@
 #include "Adafruit_BME680.h"
 #include "math.h"
 #include "main.h"
+#include "bme68x_defs.h"
+
+
 
 //#define BME680_DEBUG
 #define	delay		HAL_Delay
 #define millis	HAL_GetTick
+
+#ifndef ARRAY_LEN
+#define ARRAY_LEN(array)				(sizeof(array)/sizeof(array[0]))
+#endif
 
 /** Our hardware interface functions **/
 static int8_t i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t len,
@@ -202,6 +209,44 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
   }
   // don't do anything till we request a reading
   rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &gas_sensor);
+
+  // Initialize BSEC library before further use
+  bsec_init();
+  if (status != BSEC_OK)
+	  return false;
+
+  status = bsec_get_version(&version);
+	if (status != BSEC_OK)
+	 return false;
+
+	memset(&bmeConf, 0, sizeof(bmeConf));
+	memset(&outputs, 0, sizeof(outputs));
+	memset(&heatrConf, 0, sizeof(heatrConf));
+
+    bsecSensor sensorList[] = {
+            BSEC_OUTPUT_IAQ,
+            BSEC_OUTPUT_RAW_TEMPERATURE,
+            BSEC_OUTPUT_RAW_PRESSURE,
+            BSEC_OUTPUT_RAW_HUMIDITY,
+            BSEC_OUTPUT_RAW_GAS,
+            BSEC_OUTPUT_STABILIZATION_STATUS,
+            BSEC_OUTPUT_RUN_IN_STATUS
+    };
+
+    bsec_sensor_configuration_t virtualSensors[BSEC_NUMBER_OUTPUTS], sensorSettings[BSEC_MAX_PHYSICAL_SENSOR];
+    uint8_t nSensorSettings = BSEC_MAX_PHYSICAL_SENSOR;
+    uint16_t nSensors = ARRAY_LEN(sensorList);
+
+    for (uint8_t i = 0; i < nSensors; i++)
+    {
+        virtualSensors[i].sensor_id = sensorList[i];
+        virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_CONT;
+    }
+
+    status = bsec_update_subscription(virtualSensors, nSensors, sensorSettings, &nSensorSettings);
+    if (status != BSEC_OK)
+        return false;
+
 
 #ifdef BME680_DEBUG
   Serial.print(F("Opmode Result: "));
@@ -445,6 +490,24 @@ bool Adafruit_BME680::setODR(uint8_t odr) {
   return rslt == 0;
 }
 
+/**
+ * @brief Function to set the Temperature, Pressure and Humidity over-sampling
+ */
+void Adafruit_BME680::setTPH(uint8_t osTemp, uint8_t osPres, uint8_t osHum)
+{
+	bme68xStatus = bme68x_get_conf(&gas_conf, &gas_sensor);
+
+	if (bme68xStatus == BME68X_OK)
+	{
+		gas_conf.os_hum = osHum;
+		gas_conf.os_temp = osTemp;
+		gas_conf.os_pres = osPres;
+
+		bme68xStatus = bme68x_set_conf(&gas_conf, &gas_sensor);
+	}
+}
+
+
 /*!
  *  @brief  Setter for Temperature oversampling
  *  @param  oversample
@@ -603,6 +666,270 @@ static void delay_usec(uint32_t t, void *intf_ptr)
 
 uint32_t GetMicros(void){
 	return HAL_GetTick() * 1000;
+}
+
+bool Adafruit_BME680::bsecRun(void)
+{
+    uint8_t nFieldsLeft = 0;
+    bme68xData data;
+    int64_t currTimeNs = HAL_GetTick() * INT64_C(1000000);
+    opMode = bmeConf.op_mode;
+
+    if (currTimeNs >= bmeConf.next_call)
+    {
+        /* Provides the information about the current sensor configuration that is
+           necessary to fulfill the input requirements, eg: operation mode, timestamp
+           at which the sensor data shall be fetched etc */
+        status = bsec_sensor_control(currTimeNs, &bmeConf);
+        if (status != BSEC_OK)
+            return false;
+
+        switch (bmeConf.op_mode)
+        {
+        case BME68X_FORCED_MODE:
+            setBme68xConfigForced();
+            break;
+        case BME68X_PARALLEL_MODE:
+            if (opMode != bmeConf.op_mode)
+            {
+                setBme68xConfigParallel();
+            }
+            break;
+
+        case BME68X_SLEEP_MODE:
+            if (opMode != bmeConf.op_mode)
+            {
+                setOpMode(BME68X_SLEEP_MODE);
+                opMode = BME68X_SLEEP_MODE;
+            }
+            break;
+        }
+
+        if (checkStatus() == BME68X_ERROR)
+            return false;
+
+        if (bmeConf.trigger_measurement && bmeConf.op_mode != BME68X_SLEEP_MODE)
+        {
+            if (sensor.fetchData())
+            {
+                do
+                {
+                    nFieldsLeft = sensor.getData(data);
+                    /* check for valid gas data */
+                    if (data.status & BME68X_GASM_VALID_MSK)
+                    {
+                        if (!bsecProcessData(currTimeNs, data))
+                        {
+                            return false;
+                        }
+                    }
+                } while (nFieldsLeft);
+            }
+
+        }
+
+    }
+    return true;
+}
+
+/**
+ * @brief Reads data from the BME68X sensor and process it
+ */
+bool Adafruit_BME680::bsecProcessData(int64_t currTimeNs, const bme68xData &data)
+{
+    bsec_input_t inputs[BSEC_MAX_PHYSICAL_SENSOR]; /* Temp, Pres, Hum & Gas */
+    uint8_t nInputs = 0;
+    /* Checks all the required sensor inputs, required for the BSEC library for the requested outputs */
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_HEATSOURCE))
+    {
+        inputs[nInputs].sensor_id = BSEC_INPUT_HEATSOURCE;
+        inputs[nInputs].signal = extTempOffset;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_TEMPERATURE))
+    {
+#ifdef BME68X_USE_FPU
+        inputs[nInputs].sensor_id = BSEC_INPUT_TEMPERATURE;
+#else
+        inputs[nInputs].sensor_id = BSEC_INPUT_TEMPERATURE / 100.0f;
+#endif
+        inputs[nInputs].signal = data.temperature;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_HUMIDITY))
+    {
+#ifdef BME68X_USE_FPU
+        inputs[nInputs].sensor_id = BSEC_INPUT_HUMIDITY;
+#else
+        inputs[nInputs].sensor_id = BSEC_INPUT_HUMIDITY / 1000.0f;
+#endif
+        inputs[nInputs].signal = data.humidity;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_PRESSURE))
+    {
+        inputs[nInputs].sensor_id = BSEC_INPUT_PRESSURE;
+        inputs[nInputs].signal = data.pressure;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_GASRESISTOR) &&
+            (data.status & BME68X_GASM_VALID_MSK))
+    {
+        inputs[nInputs].sensor_id = BSEC_INPUT_GASRESISTOR;
+        inputs[nInputs].signal = data.gas_resistance;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+    if (BSEC_CHECK_INPUT(bmeConf.process_data, BSEC_INPUT_PROFILE_PART) &&
+            (data.status & BME68X_GASM_VALID_MSK))
+    {
+        inputs[nInputs].sensor_id = BSEC_INPUT_PROFILE_PART;
+        inputs[nInputs].signal = (opMode == BME68X_FORCED_MODE) ? 0 : data.gas_index;
+        inputs[nInputs].time_stamp = currTimeNs;
+        nInputs++;
+    }
+
+    if (nInputs > 0)
+    {
+
+        outputs.nOutputs = BSEC_NUMBER_OUTPUTS;
+        memset(outputs.output, 0, sizeof(outputs.output));
+
+        /* Processing of the input signals and returning of output samples is performed by bsec_do_steps() */
+        status = bsec_do_steps(inputs, nInputs, outputs.output, &outputs.nOutputs);
+
+        if (status != BSEC_OK)
+            return false;
+
+        if(newDataCallback)
+            newDataCallback(data, outputs, *this);
+    }
+    return true;
+}
+
+/**
+ * @brief Set the BME68X sensor configuration to forced mode
+ */
+void Adafruit_BME680::setBme68xConfigForced(void)
+{
+    /* Set the filter, odr, temperature, pressure and humidity settings */
+    setTPH(bmeConf.temperature_oversampling, bmeConf.pressure_oversampling, bmeConf.humidity_oversampling);
+
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+    setHeaterProf(bmeConf.heater_temperature, bmeConf.heater_duration);
+
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+   setOpMode(BME68X_FORCED_MODE);
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+    opMode = BME68X_FORCED_MODE;
+}
+
+/**
+ * @brief Set the BME68X sensor configuration to parallel mode
+ */
+void Adafruit_BME680::setBme68xConfigParallel(void)
+{
+    uint16_t sharedHeaterDur = 0;
+
+    /* Set the filter, odr, temperature, pressure and humidity settings */
+    setTPH(bmeConf.temperature_oversampling, bmeConf.pressure_oversampling, bmeConf.humidity_oversampling);
+
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+    sharedHeaterDur = BSEC_TOTAL_HEAT_DUR - (sensor.getMeasDur(BME68X_PARALLEL_MODE) / INT64_C(1000));
+
+    setHeaterProf(bmeConf.heater_temperature_profile, bmeConf.heater_duration_profile, sharedHeaterDur,
+            bmeConf.heater_profile_len);
+
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+    setOpMode(BME68X_PARALLEL_MODE);
+
+    if (checkStatus() == BME68X_ERROR)
+        return;
+
+    opMode = BME68X_PARALLEL_MODE;
+}
+
+/**
+ * @brief Function to check if an error / warning has occurred
+ */
+int8_t Adafruit_BME680::checkStatus(void)
+{
+	if (bme68xStatus < BME68X_OK)
+	{
+		return BME68X_ERROR;
+	}
+	else if(bme68xStatus > BME68X_OK)
+	{
+		return BME68X_WARNING;
+	}
+	else
+	{
+		return BME68X_OK;
+	}
+}
+
+/**
+ * @brief Function to set the heater profile for Forced mode
+ */
+void Adafruit_BME680::setHeaterProf(uint16_t temp, uint16_t dur)
+{
+	heatrConf.enable = BME68X_ENABLE;
+	heatrConf.heatr_temp = temp;
+	heatrConf.heatr_dur = dur;
+
+	bme68xStatus = bme68x_set_heatr_conf(BME68X_FORCED_MODE, &heatrConf, &gas_sensor);
+}
+
+/**
+ * @brief Function to set the heater profile for Sequential mode
+ */
+void Adafruit_BME680::setHeaterProf(uint16_t *temp, uint16_t *dur, uint8_t profileLen)
+{
+	heatrConf.enable = BME68X_ENABLE;
+	heatrConf.heatr_temp_prof = temp;
+	heatrConf.heatr_dur_prof = dur;
+	heatrConf.profile_len = profileLen;
+
+	bme68xStatus = bme68x_set_heatr_conf(BME68X_SEQUENTIAL_MODE, &heatrConf, &gas_sensor);
+
+}
+
+/**
+ * @brief Function to set the heater profile for Parallel mode
+ */
+void Adafruit_BME680::setHeaterProf(uint16_t *temp, uint16_t *mul, uint16_t sharedHeatrDur, uint8_t profileLen)
+{
+	heatrConf.enable = BME68X_ENABLE;
+	heatrConf.heatr_temp_prof = temp;
+	heatrConf.heatr_dur_prof = mul;
+	heatrConf.shared_heatr_dur = sharedHeatrDur;
+	heatrConf.profile_len = profileLen;
+
+	bme68xStatus = bme68x_set_heatr_conf(BME68X_PARALLEL_MODE, &heatrConf, &gas_sensor);
+}
+
+/**
+ * @brief Function to set the operation mode
+ */
+void Adafruit_BME680::setOpMode(uint8_t opMode)
+{
+	bme68xStatus = bme68x_set_op_mode(opMode, &gas_sensor);
+	if ((status == BME68X_OK) && (opMode != BME68X_SLEEP_MODE))
+		lastOpMode = opMode;
 }
 
 ///*!
