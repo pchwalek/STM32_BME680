@@ -117,6 +117,8 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
 
   int8_t rslt;
 
+  extTempOffset = 0.0f;
+
 	gas_sensor.chip_id = i2c_addr;
 	gas_sensor.intf = BME68X_I2C_INTF;
 	gas_sensor.intf_ptr = &i2c_dev;
@@ -197,16 +199,16 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
   Serial.println(gas_sensor.calib.range_sw_err);
 #endif
 
-  if (initSettings) {
-    setIIRFilterSize(BME68X_FILTER_SIZE_3);
-    setODR(BME68X_ODR_NONE);
-    setHumidityOversampling(BME68X_OS_2X);
-    setPressureOversampling(BME68X_OS_4X);
-    setTemperatureOversampling(BME68X_OS_8X);
-    setGasHeater(320, 150); // 320*C for 150 ms
-  } else {
-    setGasHeater(0, 0);
-  }
+//  if (initSettings) {
+//    setIIRFilterSize(BME68X_FILTER_SIZE_3);
+//    setODR(BME68X_ODR_NONE);
+//    setHumidityOversampling(BME68X_OS_2X);
+//    setPressureOversampling(BME68X_OS_4X);
+//    setTemperatureOversampling(BME68X_OS_8X);
+//    setGasHeater(320, 150); // 320*C for 150 ms
+//  } else {
+//    setGasHeater(0, 0);
+//  }
   // don't do anything till we request a reading
   rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &gas_sensor);
 
@@ -230,7 +232,11 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
             BSEC_OUTPUT_RAW_HUMIDITY,
             BSEC_OUTPUT_RAW_GAS,
             BSEC_OUTPUT_STABILIZATION_STATUS,
-            BSEC_OUTPUT_RUN_IN_STATUS
+            BSEC_OUTPUT_RUN_IN_STATUS,
+			BSEC_OUTPUT_CO2_EQUIVALENT,
+			BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
+//			BSEC_OUTPUT_GAS_ESTIMATE_1,
+//			BSEC_OUTPUT_GAS_ESTIMATE_2
     };
 
     bsec_sensor_configuration_t virtualSensors[BSEC_NUMBER_OUTPUTS], sensorSettings[BSEC_MAX_PHYSICAL_SENSOR];
@@ -240,7 +246,8 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
     for (uint8_t i = 0; i < nSensors; i++)
     {
         virtualSensors[i].sensor_id = sensorList[i];
-        virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_CONT;
+//        virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_CONT;
+		virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_LP;
     }
 
     status = bsec_update_subscription(virtualSensors, nSensors, sensorSettings, &nSensorSettings);
@@ -491,6 +498,51 @@ bool Adafruit_BME680::setODR(uint8_t odr) {
 }
 
 /**
+ * @brief Function to fetch data from the sensor into the local buffer
+ */
+uint8_t Adafruit_BME680::fetchData(void)
+{
+	nFields = 0;
+	bme68xStatus = bme68x_get_data(lastOpMode, sensorData, &nFields, &gas_sensor);
+	iFields = 0;
+
+	return nFields;
+}
+
+/**
+ * @brief Function to get a single data field
+ */
+uint8_t Adafruit_BME680::getData(bme68xData &data)
+{
+	if (lastOpMode == BME68X_FORCED_MODE)
+	{
+		data = sensorData[0];
+	} else
+	{
+		if (nFields)
+		{
+			/* iFields spans from 0-2 while nFields spans from
+			 * 0-3, where 0 means that there is no new data
+			 */
+			data = sensorData[iFields];
+			iFields++;
+
+			/* Limit reading continuously to the last fields read */
+			if (iFields >= nFields)
+			{
+				iFields = nFields - 1;
+				return 0;
+			}
+
+			/* Indicate if there is something left to read */
+			return nFields - iFields;
+		}
+	}
+
+	return 0;
+}
+
+/**
  * @brief Function to set the Temperature, Pressure and Humidity over-sampling
  */
 void Adafruit_BME680::setTPH(uint8_t osTemp, uint8_t osPres, uint8_t osHum)
@@ -710,11 +762,11 @@ bool Adafruit_BME680::bsecRun(void)
 
         if (bmeConf.trigger_measurement && bmeConf.op_mode != BME68X_SLEEP_MODE)
         {
-            if (sensor.fetchData())
+            if (fetchData())
             {
                 do
                 {
-                    nFieldsLeft = sensor.getData(data);
+                    nFieldsLeft = getData(data);
                     /* check for valid gas data */
                     if (data.status & BME68X_GASM_VALID_MSK)
                     {
@@ -728,6 +780,8 @@ bool Adafruit_BME680::bsecRun(void)
 
         }
 
+    } else{
+    	return false;
     }
     return true;
 }
@@ -805,8 +859,8 @@ bool Adafruit_BME680::bsecProcessData(int64_t currTimeNs, const bme68xData &data
         if (status != BSEC_OK)
             return false;
 
-        if(newDataCallback)
-            newDataCallback(data, outputs, *this);
+//        if(bsecDataAvailable)
+//		bsecDataAvailable(data, outputs);
     }
     return true;
 }
@@ -847,7 +901,7 @@ void Adafruit_BME680::setBme68xConfigParallel(void)
     if (checkStatus() == BME68X_ERROR)
         return;
 
-    sharedHeaterDur = BSEC_TOTAL_HEAT_DUR - (sensor.getMeasDur(BME68X_PARALLEL_MODE) / INT64_C(1000));
+    sharedHeaterDur = BSEC_TOTAL_HEAT_DUR - (getMeasDur(BME68X_PARALLEL_MODE) / INT64_C(1000));
 
     setHeaterProf(bmeConf.heater_temperature_profile, bmeConf.heater_duration_profile, sharedHeaterDur,
             bmeConf.heater_profile_len);
@@ -880,6 +934,17 @@ int8_t Adafruit_BME680::checkStatus(void)
 	{
 		return BME68X_OK;
 	}
+}
+
+/**
+ * @brief Function to get the measurement duration in microseconds
+ */
+uint32_t Adafruit_BME680::getMeasDur(uint8_t opMode)
+{
+	if (opMode == BME68X_SLEEP_MODE)
+		opMode = lastOpMode;
+
+	return bme68x_get_meas_dur(opMode, &gas_conf, &gas_sensor);
 }
 
 /**
@@ -928,8 +993,49 @@ void Adafruit_BME680::setHeaterProf(uint16_t *temp, uint16_t *mul, uint16_t shar
 void Adafruit_BME680::setOpMode(uint8_t opMode)
 {
 	bme68xStatus = bme68x_set_op_mode(opMode, &gas_sensor);
-	if ((status == BME68X_OK) && (opMode != BME68X_SLEEP_MODE))
+	if ((bme68xStatus == BME68X_OK) && (opMode != BME68X_SLEEP_MODE))
 		lastOpMode = opMode;
+}
+
+void Adafruit_BME680::bsecDataAvailable(const bme68xData data, const bsecOutputs outputs)
+{
+    if (!outputs.nOutputs)
+    {
+        return;
+    }
+
+//    Serial.println("BSEC outputs:\n\ttimestamp = " + String((int) (outputs.output[0].time_stamp / INT64_C(1000000))));
+    for (uint8_t i = 0; i < outputs.nOutputs; i++)
+    {
+        const bsecData output  = outputs.output[i];
+        switch (output.sensor_id)
+        {
+            case BSEC_OUTPUT_IAQ:
+//                Serial.println("\tiaq = " + String(output.signal));
+//                Serial.println("\tiaq accuracy = " + String((int) output.accuracy));
+                break;
+            case BSEC_OUTPUT_RAW_TEMPERATURE:
+//                Serial.println("\ttemperature = " + String(output.signal));
+                break;
+            case BSEC_OUTPUT_RAW_PRESSURE:
+//                Serial.println("\tpressure = " + String(output.signal));
+                break;
+            case BSEC_OUTPUT_RAW_HUMIDITY:
+//                Serial.println("\thumidity = " + String(output.signal));
+                break;
+            case BSEC_OUTPUT_RAW_GAS:
+//                Serial.println("\tgas resistance = " + String(output.signal));
+                break;
+            case BSEC_OUTPUT_STABILIZATION_STATUS:
+//                Serial.println("\tstabilization status = " + String(output.signal));
+                break;
+            case BSEC_OUTPUT_RUN_IN_STATUS:
+//                Serial.println("\trun in status = " + String(output.signal));
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 ///*!

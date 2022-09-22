@@ -120,6 +120,7 @@ public:
   bool setIIRFilterSize(uint8_t fs);
   bool setGasHeater(uint16_t heaterTemp, uint16_t heaterTime);
   bool setODR(uint8_t odr);
+  uint32_t getMeasDur(uint8_t opMode);
 
   bool bsecRun();
   bool bsecProcessData(int64_t currTimeNs, const bme68xData &data);
@@ -187,11 +188,19 @@ public:
   int8_t writeRegister(uint8_t mem_addr, uint8_t *val, uint16_t size, void *intf);
   int8_t readRegister(uint16_t mem_addr, uint8_t *dest, uint16_t size, void *intf);
 
+  uint8_t fetchData(void);
+  uint8_t getData(bme68xData &data);
+
+  void bsecDataAvailable(const bme68xData data, const bsecOutputs outputs);
+
   bsec_version_t version;
   bsec_library_return_t status;
   int8_t bme68xStatus;
   bme68xHeatrConf heatrConf;
   bme68xData sensorData[3];
+
+  uint8_t nFields, iFields;
+  uint8_t lastOpMode;
 
 
   bsec_bme_settings_t bmeConf;
@@ -205,6 +214,11 @@ private:
   int32_t _sensorID;
   uint32_t _meas_start = 0;
   uint16_t _meas_period = 0;
+
+  float extTempOffset;
+
+  /* operating mode of sensor */
+  uint8_t opMode;
 
   struct bme68x_dev gas_sensor;
   struct bme68x_conf gas_conf;
