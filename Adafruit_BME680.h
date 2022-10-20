@@ -130,6 +130,11 @@ public:
 
   void setTPH(uint8_t osTemp, uint8_t osPres, uint8_t osHum);
 
+  bool bsecSetConfig(const uint8_t *config);
+  bool bsecGetConfig( uint8_t *config, uint32_t *n_serialized_settings);
+  bool bsecGetState( uint8_t *state, uint32_t *n_serialized_state);
+  bool bsecSetState(const uint8_t *state);
+
   /**
    * @brief Function to set the heater profile for Forced mode
    * @param temp : Heater temperature in degree Celsius
@@ -192,6 +197,7 @@ public:
   uint8_t getData(bme68xData &data);
 
   void bsecDataAvailable(const bme68xData data, const bsecOutputs outputs);
+  bool bsecSubscribe(void);
 
   bsec_version_t version;
   bsec_library_return_t status;

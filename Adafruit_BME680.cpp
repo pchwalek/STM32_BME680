@@ -31,11 +31,12 @@
 #include "math.h"
 #include "main.h"
 #include "bme68x_defs.h"
+#include "cmsis_os2.h"
 
-
+static uint8_t workBuffer[BSEC_MAX_WORKBUFFER_SIZE];
 
 //#define BME680_DEBUG
-#define	delay		HAL_Delay
+#define	delay		osDelay
 #define millis	HAL_GetTick
 
 #ifndef ARRAY_LEN
@@ -210,10 +211,10 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
 //    setGasHeater(0, 0);
 //  }
   // don't do anything till we request a reading
-  rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &gas_sensor);
+//  rslt = bme68x_set_op_mode(BME68X_FORCED_MODE, &gas_sensor);
 
   // Initialize BSEC library before further use
-  bsec_init();
+  status = bsec_init();
   if (status != BSEC_OK)
 	  return false;
 
@@ -225,6 +226,18 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
 	memset(&outputs, 0, sizeof(outputs));
 	memset(&heatrConf, 0, sizeof(heatrConf));
 
+#ifdef BME680_DEBUG
+  Serial.print(F("Opmode Result: "));
+  Serial.println(rslt);
+#endif
+
+  if (rslt != BME68X_OK)
+    return false;
+
+  return true;
+}
+
+bool Adafruit_BME680::bsecSubscribe(void) {
     bsecSensor sensorList[] = {
             BSEC_OUTPUT_IAQ,
             BSEC_OUTPUT_RAW_TEMPERATURE,
@@ -248,22 +261,16 @@ bool Adafruit_BME680::begin(uint8_t i2c_address, I2C_HandleTypeDef *i2c_handle, 
         virtualSensors[i].sensor_id = sensorList[i];
 //        virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_CONT;
 		virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_LP;
+//		virtualSensors[i].sample_rate = BSEC_SAMPLE_RATE_SCAN;
     }
 
     status = bsec_update_subscription(virtualSensors, nSensors, sensorSettings, &nSensorSettings);
-    if (status != BSEC_OK)
+    if (status != BSEC_OK){
         return false;
-
-
-#ifdef BME680_DEBUG
-  Serial.print(F("Opmode Result: "));
-  Serial.println(rslt);
-#endif
-
-  if (rslt != BME68X_OK)
-    return false;
-
-  return true;
+    }
+    else{
+    	return true;
+    }
 }
 
 /*!
@@ -713,11 +720,51 @@ static void delay_usec(uint32_t t, void *intf_ptr)
       // do nothing
     };
   }
+//  osDelay(ceil(t/1000.0));
 
 };
 
 uint32_t GetMicros(void){
 	return HAL_GetTick() * 1000;
+}
+
+bool Adafruit_BME680::bsecGetConfig(uint8_t *config, uint32_t *n_serialized_settings){
+	status = bsec_get_configuration(0, config, BSEC_MAX_PROPERTY_BLOB_SIZE, workBuffer, BSEC_MAX_WORKBUFFER_SIZE, n_serialized_settings);
+
+	if (status != BSEC_OK)
+		return false;
+
+	return true;
+}
+
+bool Adafruit_BME680::bsecGetState(uint8_t *state, uint32_t *n_serialized_state){
+	status = bsec_get_state(0, state, BSEC_MAX_STATE_BLOB_SIZE, workBuffer, BSEC_MAX_WORKBUFFER_SIZE, n_serialized_state);
+
+	if (status != BSEC_OK)
+		return false;
+
+	return true;
+}
+
+
+bool Adafruit_BME680::bsecSetConfig(const uint8_t *config)
+{
+    status = bsec_set_configuration(config, BSEC_MAX_PROPERTY_BLOB_SIZE, workBuffer, BSEC_MAX_WORKBUFFER_SIZE);
+    if (status != BSEC_OK)
+        return false;
+
+    memset(&bmeConf, 0, sizeof(bmeConf));
+
+    return true;
+}
+
+
+bool Adafruit_BME680::bsecSetState(const uint8_t *state){
+    status = bsec_set_state(state, BSEC_MAX_STATE_BLOB_SIZE, workBuffer, BSEC_MAX_WORKBUFFER_SIZE);
+    if (status != BSEC_OK)
+        return false;
+
+    return true;
 }
 
 bool Adafruit_BME680::bsecRun(void)
@@ -727,12 +774,15 @@ bool Adafruit_BME680::bsecRun(void)
     int64_t currTimeNs = HAL_GetTick() * INT64_C(1000000);
     opMode = bmeConf.op_mode;
 
+
+
     if (currTimeNs >= bmeConf.next_call)
     {
         /* Provides the information about the current sensor configuration that is
            necessary to fulfill the input requirements, eg: operation mode, timestamp
            at which the sensor data shall be fetched etc */
         status = bsec_sensor_control(currTimeNs, &bmeConf);
+
         if (status != BSEC_OK)
             return false;
 
@@ -781,6 +831,10 @@ bool Adafruit_BME680::bsecRun(void)
         }
 
     } else{
+//        uint32_t timeLeft_ms = floor( (bmeConf.next_call - currTimeNs) / 1000000);
+//        if ( timeLeft_ms > 0){
+//        	osDelay(timeLeft_ms);
+//        }
     	return false;
     }
     return true;
