@@ -97,6 +97,10 @@ Adafruit_BME680::Adafruit_BME680(void)
 //                                   SPI_BITORDER_MSBFIRST, SPI_MODE0);
 //}
 
+void Adafruit_BME680::soft_reset(void){
+	bme68x_soft_reset(&gas_sensor);
+}
+
 /*!
  *  @brief  Initializes the sensor
  *          Hardware ss initialized, verifies it is in the I2C or SPI bus, then

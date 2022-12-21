@@ -114,6 +114,8 @@ public:
   uint32_t readGas();
   float readAltitude(float seaLevel);
 
+  void soft_reset(void);
+
   bool setTemperatureOversampling(uint8_t os);
   bool setPressureOversampling(uint8_t os);
   bool setHumidityOversampling(uint8_t os);
